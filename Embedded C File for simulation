@@ -1,0 +1,115 @@
+#include <reg51.h>
+
+// LCD Connections
+#define LCD P2
+sbit RS = P3^0;
+sbit EN = P3^1;
+
+// ADC Connections (ADC0804)
+#define ADC_DATA P1
+sbit ADC_WR   = P3^6;
+sbit ADC_RD   = P3^7;
+sbit INTR     = P3^2;
+
+// Output Connection
+sbit BUZZER  = P3^4;  
+
+// Hardware Calibration Thresholds (Adjust these after physical testing!)
+#define LIMIT_POOR   80   
+#define LIMIT_DANGER 150  
+
+void delay(unsigned int ms) {
+    unsigned int i, j;
+    // 120 is approximately 1ms for a standard 11.0592MHz crystal
+    for(i = 0; i < ms; i++)
+        for(j = 0; j < 120; j++); 
+}
+
+void lcd_cmd(unsigned char cmd) {
+    LCD = cmd; RS = 0; EN = 1; delay(2); EN = 0; delay(2);
+}
+
+void lcd_data(unsigned char dat) {
+    LCD = dat; RS = 1; EN = 1; delay(2); EN = 0; delay(2);
+}
+
+void lcd_string(char *str) {
+    while(*str) lcd_data(*str++);
+}
+
+void lcd_init() {
+    lcd_cmd(0x38); lcd_cmd(0x0C); lcd_cmd(0x06); lcd_cmd(0x01); delay(5);
+}
+
+// Basic ADC Read
+unsigned char read_adc() {
+    unsigned char value;
+    ADC_WR = 0; delay(1); ADC_WR = 1;
+    while(INTR == 1); 
+    ADC_RD = 0; delay(1);
+    value = ADC_DATA; 
+    ADC_RD = 1;
+    return value;
+}
+
+// Hardware Smoothing: Takes 10 readings and finds the average
+unsigned char get_stable_aqi() {
+    unsigned int sum = 0;
+    unsigned char i;
+    for(i = 0; i < 10; i++) {
+        sum += read_adc();
+        delay(20); // Small interval between samples
+    }
+    return (unsigned char)(sum / 10);
+}
+
+void main() {
+    unsigned char aqi_val;
+    unsigned char k; // Variable for the delay loop
+    
+    BUZZER = 0;
+    lcd_init();
+    
+    // SENSOR WARM-UP (Crucial for physical MQ-135)
+    lcd_cmd(0x80);
+    lcd_string("SENSOR PREHEAT");
+    lcd_cmd(0xC0);
+    lcd_string("PLEASE WAIT...");
+    
+    // Approx 1-minute delay loop for real hardware stabilization
+    for(k = 0; k < 60; k++) {
+        delay(1000); // 1 second delay x 60
+    }
+    
+    lcd_cmd(0x01); // Clear screen
+
+    while(1) {
+        aqi_val = get_stable_aqi(); 
+
+        // Line 1: Value Display
+        lcd_cmd(0x80);
+        lcd_string("AQI Level: ");
+        lcd_data((aqi_val / 100) + '0');
+        lcd_data(((aqi_val / 10) % 10) + '0');
+        lcd_data((aqi_val % 10) + '0');
+        lcd_string("   "); // Clears any leftover characters from previous reads
+
+        // Line 2: Grading Logic
+        lcd_cmd(0xC0);
+        if(aqi_val < LIMIT_POOR) {
+            lcd_string("GRADE: GOOD    ");
+            BUZZER = 0;
+        }
+        else if(aqi_val < LIMIT_DANGER) {
+            lcd_string("GRADE: POOR    ");
+            BUZZER = 0; 
+        }
+        else {
+            lcd_string("GRADE: DANGER! ");
+            // Pulse the buzzer for an alarm sound
+            BUZZER = 1; delay(150);
+            BUZZER = 0; delay(150);
+        }
+        delay(200); 
+    }
+}
